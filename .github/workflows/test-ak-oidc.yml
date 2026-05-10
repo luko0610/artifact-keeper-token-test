@@ -6,9 +6,9 @@ permissions:
   contents: read
 
 env:
-  AK_URL: https://stevens-glance-unit-land.trycloudflare.com
+  AK_URL: https://pieces-imagination-proposal-simulations.trycloudflare.com
   AK_PROVIDER_ID: e698157e-485d-4478-9857-8de8e5efa9de
-  AK_REGISTRY: stevens-glance-unit-land.trycloudflare.com
+  AK_REGISTRY: pieces-imagination-proposal-simulations.trycloudflare.com
   AK_REPO: ci-test
 
 jobs:
