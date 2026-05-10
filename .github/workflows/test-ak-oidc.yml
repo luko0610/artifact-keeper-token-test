@@ -32,14 +32,17 @@ jobs:
 
           echo ""
           echo "==> Exchanging JWT for Artifact Keeper access token..."
+          # The CI JWT is passed in the Authorization header (not the body) to
+          # keep it out of access logs and HTTP request traces on the server.
           RESPONSE=$(curl -sf -X POST \
             "$AK_URL/api/v1/auth/ci/token" \
+            -H "Authorization: Bearer $GITHUB_JWT" \
             -H "Content-Type: application/json" \
-            -d "{\"provider_id\": \"$AK_PROVIDER_ID\", \"jwt\": \"$GITHUB_JWT\"}")
+            -d "{\"provider_id\": \"$AK_PROVIDER_ID\"}")
 
           echo ""
           echo "==> Response:"
-          echo "$RESPONSE" | jq .
+          echo "$RESPONSE" | jq '{username, token_type, expires_in}'
 
           ACCESS_TOKEN=$(echo "$RESPONSE" | jq -r '.access_token // empty')
           if [ -z "$ACCESS_TOKEN" ]; then
@@ -47,18 +50,17 @@ jobs:
             exit 1
           fi
 
+          # The response now includes the username directly — no /auth/me needed.
+          CI_USERNAME=$(echo "$RESPONSE" | jq -r '.username')
+          if [ -z "$CI_USERNAME" ] || [ "$CI_USERNAME" = "null" ]; then
+            echo "ERROR: No username in response"
+            exit 1
+          fi
+
           echo "::add-mask::$ACCESS_TOKEN"
           echo "access_token=$ACCESS_TOKEN" >> "$GITHUB_OUTPUT"
-
-          echo ""
-          echo "==> SUCCESS! Verifying token against /api/v1/auth/me ..."
-          ME=$(curl -sf \
-            "$AK_URL/api/v1/auth/me" \
-            -H "Authorization: Bearer $ACCESS_TOKEN")
-          echo "$ME" | jq '{username, display_name, groups}'
-
-          CI_USERNAME=$(echo "$ME" | jq -r '.username')
           echo "ci_username=$CI_USERNAME" >> "$GITHUB_OUTPUT"
+          echo "==> SUCCESS! Authenticated as: $CI_USERNAME"
 
       - name: Docker login to Artifact Keeper registry
         run: |
