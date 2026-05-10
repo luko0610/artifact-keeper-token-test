@@ -110,11 +110,12 @@ jobs:
       - name: Publish npm package
         run: |
           REGISTRY_URL="${AK_URL}/npm/${AK_REPO}/"
+          mkdir hello-npm && cd hello-npm
           cat > .npmrc <<RCEOF
+          @ci:registry=${AK_URL}/npm/${AK_REPO}/
           //${AK_REGISTRY}/npm/${AK_REPO}/:_authToken=${{ needs.exchange-token.outputs.access_token }}
           //${AK_REGISTRY}/npm/${AK_REPO}/:always-auth=true
           RCEOF
-          mkdir hello-npm && cd hello-npm
           printf '{"name":"@ci/hello-npm","version":"0.0.${{ github.run_number }}","description":"CI OIDC test"}' > package.json
           npm publish --registry "${REGISTRY_URL}"
           echo "==> Published @ci/hello-npm 0.0.${{ github.run_number }}"
@@ -137,7 +138,7 @@ jobs:
           cat > hello_pypi/pyproject.toml <<TOMLEOF
           [build-system]
           requires = ["setuptools"]
-          build-backend = "setuptools.backends.legacy:build"
+          build-backend = "setuptools.build_meta"
           [project]
           name = "hello-pypi-ci"
           version = "0.0.${{ github.run_number }}"
@@ -162,19 +163,14 @@ jobs:
           dotnet-version: '8.x'
       - name: Pack and push NuGet package
         run: |
-          dotnet nuget add source "$AK_URL/nuget/$AK_REPO/index.json" \
-            --name artifact-keeper \
-            --username "${{ needs.exchange-token.outputs.ci_username }}" \
-            --password "${{ needs.exchange-token.outputs.access_token }}" \
-            --store-password-in-clear-text
+          dotnet nuget add source "$AK_URL/nuget/$AK_REPO/v3/index.json" --name artifact-keeper --username "${{ needs.exchange-token.outputs.ci_username }}" --password "${{ needs.exchange-token.outputs.access_token }}" --store-password-in-clear-text
           mkdir HelloNuget && cd HelloNuget
           dotnet new classlib -n HelloCi --force
           cd HelloCi
           sed -i "s|<Version>.*</Version>|<Version>0.0.${{ github.run_number }}</Version>|" HelloCi.csproj
           dotnet pack -c Release -o ./nupkgs
-          dotnet nuget push ./nupkgs/*.nupkg \
-            --source artifact-keeper \
-            --api-key "${{ needs.exchange-token.outputs.ci_username }}:${{ needs.exchange-token.outputs.access_token }}"
+          NUPKG=$(ls ./nupkgs/*.nupkg | head -n 1)
+          curl -sfS -X PUT "$AK_URL/nuget/$AK_REPO/api/v2/package" -H "X-NuGet-ApiKey: ${{ needs.exchange-token.outputs.access_token }}" --upload-file "$NUPKG"
           echo "==> Pushed HelloCi 0.0.${{ github.run_number }}"
 
   # --- Helm ---
