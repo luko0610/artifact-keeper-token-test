@@ -6,9 +6,9 @@ permissions:
   contents: read
 
 env:
-  AK_URL: https://packaging-gabriel-ban-violation.trycloudflare.com
+  AK_URL: https://occur-orange-separate-unnecessary.trycloudflare.com
   AK_PROVIDER_ID: e698157e-485d-4478-9857-8de8e5efa9de
-  AK_REGISTRY: packaging-gabriel-ban-violation.trycloudflare.com
+  AK_REGISTRY: occur-orange-separate-unnecessary.trycloudflare.com
 
 jobs:
   # --- Shared token exchange ---
@@ -110,10 +110,8 @@ jobs:
       - name: Publish npm package
         run: |
           REGISTRY_URL="${AK_URL}/npm/${AK_REPO}/"
-          ENCODED=$(echo -n "${{ needs.exchange-token.outputs.ci_username }}:${{ needs.exchange-token.outputs.access_token }}" | base64)
           cat > .npmrc <<RCEOF
-          registry=${REGISTRY_URL}
-          //${AK_REGISTRY}/npm/${AK_REPO}/:_auth=${ENCODED}
+          //${AK_REGISTRY}/npm/${AK_REPO}/:_authToken=${{ needs.exchange-token.outputs.access_token }}
           //${AK_REGISTRY}/npm/${AK_REPO}/:always-auth=true
           RCEOF
           mkdir hello-npm && cd hello-npm
@@ -176,7 +174,7 @@ jobs:
           dotnet pack -c Release -o ./nupkgs
           dotnet nuget push ./nupkgs/*.nupkg \
             --source artifact-keeper \
-            --api-key "${{ needs.exchange-token.outputs.access_token }}"
+            --api-key "${{ needs.exchange-token.outputs.ci_username }}:${{ needs.exchange-token.outputs.access_token }}"
           echo "==> Pushed HelloCi 0.0.${{ github.run_number }}"
 
   # --- Helm ---
