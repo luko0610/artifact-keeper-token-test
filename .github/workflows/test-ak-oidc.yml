@@ -6,9 +6,9 @@ permissions:
   contents: read
 
 env:
-  AK_URL: https://galaxy-images-whose-encounter.trycloudflare.com
+  AK_URL: https://prairie-programs-coastal-mathematical.trycloudflare.com
   AK_PROVIDER_ID: e698157e-485d-4478-9857-8de8e5efa9de
-  AK_REGISTRY: galaxy-images-whose-encounter.trycloudflare.com
+  AK_REGISTRY: prairie-programs-coastal-mathematical.trycloudflare.com
 
 jobs:
   # --- Shared token exchange ---
