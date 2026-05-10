@@ -6,9 +6,9 @@ permissions:
   contents: read
 
 env:
-  AK_URL: https://occur-orange-separate-unnecessary.trycloudflare.com
+  AK_URL: https://galaxy-images-whose-encounter.trycloudflare.com
   AK_PROVIDER_ID: e698157e-485d-4478-9857-8de8e5efa9de
-  AK_REGISTRY: occur-orange-separate-unnecessary.trycloudflare.com
+  AK_REGISTRY: galaxy-images-whose-encounter.trycloudflare.com
 
 jobs:
   # --- Shared token exchange ---
