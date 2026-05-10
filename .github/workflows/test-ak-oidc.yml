@@ -1,0 +1,49 @@
+name: Test AK OIDC Token Exchange
+on: workflow_dispatch
+
+permissions:
+  id-token: write   # required to request the GitHub OIDC JWT
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Exchange GitHub OIDC token for Artifact Keeper token
+        run: |
+          echo "==> Requesting GitHub OIDC JWT (audience: artifact-keeper)..."
+          GITHUB_JWT=$(curl -sf \
+            -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+            "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=artifact-keeper" \
+            | jq -r '.value')
+
+          if [ -z "$GITHUB_JWT" ] || [ "$GITHUB_JWT" = "null" ]; then
+            echo "ERROR: Failed to obtain GitHub OIDC JWT"
+            exit 1
+          fi
+          echo "JWT obtained (${#GITHUB_JWT} chars)"
+
+          echo ""
+          echo "==> Exchanging JWT for Artifact Keeper access token..."
+          RESPONSE=$(curl -sf -X POST \
+            https://stevens-glance-unit-land.trycloudflare.com/api/v1/auth/ci/token \
+            -H "Content-Type: application/json" \
+            -d "{\"provider_id\": \"e698157e-485d-4478-9857-8de8e5efa9de\", \"jwt\": \"$GITHUB_JWT\"}")
+
+          echo ""
+          echo "==> Response:"
+          echo "$RESPONSE" | jq .
+
+          ACCESS_TOKEN=$(echo "$RESPONSE" | jq -r '.access_token // empty')
+          if [ -z "$ACCESS_TOKEN" ]; then
+            echo "ERROR: No access_token in response"
+            exit 1
+          fi
+
+          echo ""
+          echo "==> SUCCESS! Token starts with: ${ACCESS_TOKEN:0:20}..."
+          echo "==> Verifying token against /api/v1/auth/me ..."
+          curl -sf \
+            https://stevens-glance-unit-land.trycloudflare.com/api/v1/auth/me \
+            -H "Authorization: Bearer $ACCESS_TOKEN" \
+            | jq '{username, display_name, groups}'
