@@ -2,93 +2,218 @@ name: Test AK OIDC Token Exchange
 on: workflow_dispatch
 
 permissions:
-  id-token: write   # required to request the GitHub OIDC JWT
+  id-token: write
   contents: read
 
 env:
-  AK_URL: https://pieces-imagination-proposal-simulations.trycloudflare.com
+  AK_URL: https://packaging-gabriel-ban-violation.trycloudflare.com
   AK_PROVIDER_ID: e698157e-485d-4478-9857-8de8e5efa9de
-  AK_REGISTRY: pieces-imagination-proposal-simulations.trycloudflare.com
-  AK_REPO: ci-test
+  AK_REGISTRY: packaging-gabriel-ban-violation.trycloudflare.com
 
 jobs:
-  test:
+  # --- Shared token exchange ---
+  exchange-token:
     runs-on: ubuntu-latest
+    outputs:
+      access_token: ${{ steps.ak_token.outputs.access_token }}
+      ci_username:  ${{ steps.ak_token.outputs.ci_username }}
     steps:
       - name: Exchange GitHub OIDC token for Artifact Keeper token
         id: ak_token
         run: |
-          echo "==> Requesting GitHub OIDC JWT (audience: artifact-keeper)..."
           GITHUB_JWT=$(curl -sf \
             -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
             "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=artifact-keeper" \
             | jq -r '.value')
-
-          if [ -z "$GITHUB_JWT" ] || [ "$GITHUB_JWT" = "null" ]; then
-            echo "ERROR: Failed to obtain GitHub OIDC JWT"
-            exit 1
-          fi
-          echo "JWT obtained (${#GITHUB_JWT} chars)"
-
-          echo ""
-          echo "==> Exchanging JWT for Artifact Keeper access token..."
-          # The CI JWT is passed in the Authorization header (not the body) to
-          # keep it out of access logs and HTTP request traces on the server.
+          [ -n "$GITHUB_JWT" ] && [ "$GITHUB_JWT" != "null" ] || { echo "ERROR: No JWT"; exit 1; }
+          echo "JWT obtained (\${#GITHUB_JWT} chars)"
           RESPONSE=$(curl -sf -X POST \
             "$AK_URL/api/v1/auth/ci/token" \
             -H "Authorization: Bearer $GITHUB_JWT" \
             -H "Content-Type: application/json" \
             -d "{\"provider_id\": \"$AK_PROVIDER_ID\"}")
-
-          echo ""
-          echo "==> Response:"
           echo "$RESPONSE" | jq '{username, token_type, expires_in}'
-
           ACCESS_TOKEN=$(echo "$RESPONSE" | jq -r '.access_token // empty')
-          if [ -z "$ACCESS_TOKEN" ]; then
-            echo "ERROR: No access_token in response"
-            exit 1
-          fi
-
-          # The response now includes the username directly — no /auth/me needed.
-          CI_USERNAME=$(echo "$RESPONSE" | jq -r '.username')
-          if [ -z "$CI_USERNAME" ] || [ "$CI_USERNAME" = "null" ]; then
-            echo "ERROR: No username in response"
-            exit 1
-          fi
-
+          CI_USERNAME=$(echo "$RESPONSE"  | jq -r '.username // empty')
+          [ -n "$ACCESS_TOKEN" ] || { echo "ERROR: No access_token"; exit 1; }
+          [ -n "$CI_USERNAME"  ] || { echo "ERROR: No username"; exit 1; }
           echo "::add-mask::$ACCESS_TOKEN"
           echo "access_token=$ACCESS_TOKEN" >> "$GITHUB_OUTPUT"
-          echo "ci_username=$CI_USERNAME" >> "$GITHUB_OUTPUT"
-          echo "==> SUCCESS! Authenticated as: $CI_USERNAME"
+          echo "ci_username=$CI_USERNAME"   >> "$GITHUB_OUTPUT"
+          echo "==> Authenticated as: $CI_USERNAME"
 
-      - name: Docker login to Artifact Keeper registry
+  # --- Docker ---
+  push-docker:
+    runs-on: ubuntu-latest
+    needs: exchange-token
+    env:
+      AK_REPO: ci-test
+    steps:
+      - name: Docker login and push
         run: |
-          echo "${{ steps.ak_token.outputs.access_token }}" | \
+          echo "${{ needs.exchange-token.outputs.access_token }}" | \
             docker login "$AK_REGISTRY" \
-              --username "${{ steps.ak_token.outputs.ci_username }}" \
+              --username "${{ needs.exchange-token.outputs.ci_username }}" \
               --password-stdin
-
-      - name: Build and push minimal image
-        run: |
           IMAGE="$AK_REGISTRY/$AK_REPO/hello:${{ github.run_number }}"
-          IMAGE_LATEST="$AK_REGISTRY/$AK_REPO/hello:latest"
-
-          echo "==> Building minimal image..."
-          printf 'FROM scratch\nCOPY /etc/hostname /hostname\n' > Dockerfile
-          # Use busybox as a real pullable base image instead of scratch+COPY trick
-          printf 'FROM busybox:latest\nLABEL org.opencontainers.image.source="https://github.com/%s"\nLABEL build.run="%s"\n' \
-            "$GITHUB_REPOSITORY" "$GITHUB_RUN_NUMBER" > Dockerfile
-
-          docker build -t "$IMAGE" -t "$IMAGE_LATEST" .
-
-          echo ""
-          echo "==> Pushing $IMAGE ..."
+          printf 'FROM busybox:latest\nLABEL build.run="%s"\n' "$GITHUB_RUN_NUMBER" > Dockerfile
+          docker build -t "$IMAGE" .
           docker push "$IMAGE"
+          echo "==> Pushed $IMAGE"
 
-          echo ""
-          echo "==> Pushing $IMAGE_LATEST ..."
-          docker push "$IMAGE_LATEST"
+  # --- Maven ---
+  push-maven:
+    runs-on: ubuntu-latest
+    needs: exchange-token
+    env:
+      AK_REPO: ci-test-maven
+    steps:
+      - uses: actions/setup-java@v4
+        with:
+          java-version: '21'
+          distribution: temurin
+      - name: Deploy Maven artifact
+        run: |
+          mkdir -p ~/.m2
+          cat > ~/.m2/settings.xml <<XMLEOF
+          <settings><servers><server>
+            <id>artifact-keeper</id>
+            <username>${{ needs.exchange-token.outputs.ci_username }}</username>
+            <password>${{ needs.exchange-token.outputs.access_token }}</password>
+          </server></servers></settings>
+          XMLEOF
+          mkdir -p demo/src/main/java/demo
+          echo 'package demo; public class Hello {}' > demo/src/main/java/demo/Hello.java
+          cat > demo/pom.xml <<XMLEOF
+          <project><modelVersion>4.0.0</modelVersion>
+            <groupId>com.example</groupId><artifactId>hello-ci</artifactId>
+            <version>0.0.${{ github.run_number }}</version>
+            <distributionManagement><repository>
+              <id>artifact-keeper</id>
+              <url>${AK_URL}/maven/${AK_REPO}</url>
+            </repository></distributionManagement>
+          </project>
+          XMLEOF
+          cd demo && mvn --batch-mode deploy -DskipTests
+          echo "==> Deployed hello-ci 0.0.${{ github.run_number }}"
 
-          echo ""
-          echo "==> SUCCESS! Pushed to $AK_REGISTRY/$AK_REPO/hello"
+  # --- npm ---
+  push-npm:
+    runs-on: ubuntu-latest
+    needs: exchange-token
+    env:
+      AK_REPO: ci-test-npm
+    steps:
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Publish npm package
+        run: |
+          REGISTRY_URL="${AK_URL}/npm/${AK_REPO}/"
+          ENCODED=$(echo -n "${{ needs.exchange-token.outputs.ci_username }}:${{ needs.exchange-token.outputs.access_token }}" | base64)
+          cat > .npmrc <<RCEOF
+          registry=${REGISTRY_URL}
+          //${AK_REGISTRY}/npm/${AK_REPO}/:_auth=${ENCODED}
+          //${AK_REGISTRY}/npm/${AK_REPO}/:always-auth=true
+          RCEOF
+          mkdir hello-npm && cd hello-npm
+          printf '{"name":"@ci/hello-npm","version":"0.0.${{ github.run_number }}","description":"CI OIDC test"}' > package.json
+          npm publish --registry "${REGISTRY_URL}"
+          echo "==> Published @ci/hello-npm 0.0.${{ github.run_number }}"
+
+  # --- PyPI ---
+  push-pypi:
+    runs-on: ubuntu-latest
+    needs: exchange-token
+    env:
+      AK_REPO: ci-test-pypi
+    steps:
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Build and upload Python sdist
+        run: |
+          pip install build twine --quiet
+          mkdir -p hello_pypi/hello_pypi_pkg
+          touch hello_pypi/hello_pypi_pkg/__init__.py
+          cat > hello_pypi/pyproject.toml <<TOMLEOF
+          [build-system]
+          requires = ["setuptools"]
+          build-backend = "setuptools.backends.legacy:build"
+          [project]
+          name = "hello-pypi-ci"
+          version = "0.0.${{ github.run_number }}"
+          TOMLEOF
+          cd hello_pypi && python -m build --sdist
+          twine upload \
+            --repository-url "$AK_URL/pypi/$AK_REPO/" \
+            --username "${{ needs.exchange-token.outputs.ci_username }}" \
+            --password "${{ needs.exchange-token.outputs.access_token }}" \
+            --non-interactive dist/*
+          echo "==> Published hello-pypi-ci 0.0.${{ github.run_number }}"
+
+  # --- NuGet ---
+  push-nuget:
+    runs-on: ubuntu-latest
+    needs: exchange-token
+    env:
+      AK_REPO: ci-test-nuget
+    steps:
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.x'
+      - name: Pack and push NuGet package
+        run: |
+          dotnet nuget add source "$AK_URL/nuget/$AK_REPO/index.json" \
+            --name artifact-keeper \
+            --username "${{ needs.exchange-token.outputs.ci_username }}" \
+            --password "${{ needs.exchange-token.outputs.access_token }}" \
+            --store-password-in-clear-text
+          mkdir HelloNuget && cd HelloNuget
+          dotnet new classlib -n HelloCi --force
+          cd HelloCi
+          sed -i "s|<Version>.*</Version>|<Version>0.0.${{ github.run_number }}</Version>|" HelloCi.csproj
+          dotnet pack -c Release -o ./nupkgs
+          dotnet nuget push ./nupkgs/*.nupkg \
+            --source artifact-keeper \
+            --api-key "${{ needs.exchange-token.outputs.access_token }}"
+          echo "==> Pushed HelloCi 0.0.${{ github.run_number }}"
+
+  # --- Helm ---
+  push-helm:
+    runs-on: ubuntu-latest
+    needs: exchange-token
+    env:
+      AK_REPO: ci-test-helm
+    steps:
+      - uses: azure/setup-helm@v4
+      - name: Package and push Helm chart
+        run: |
+          helm create hello-chart
+          sed -i "s/^version:.*/version: 0.0.${{ github.run_number }}/" hello-chart/Chart.yaml
+          helm package hello-chart
+          helm registry login "$AK_REGISTRY" \
+            --username "${{ needs.exchange-token.outputs.ci_username }}" \
+            --password "${{ needs.exchange-token.outputs.access_token }}"
+          helm push hello-chart-0.0.${{ github.run_number }}.tgz \
+            oci://"$AK_REGISTRY"/"$AK_REPO"
+          echo "==> Pushed hello-chart 0.0.${{ github.run_number }}"
+
+  # --- Summary ---
+  summary:
+    runs-on: ubuntu-latest
+    needs: [push-docker, push-maven, push-npm, push-pypi, push-nuget, push-helm]
+    if: always()
+    steps:
+      - name: Write job summary
+        run: |
+          echo "## CI OIDC — Tier 1 Format Results" >> $GITHUB_STEP_SUMMARY
+          echo "| Format | Result |" >> $GITHUB_STEP_SUMMARY
+          echo "|--------|--------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Docker | ${{ needs.push-docker.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Maven  | ${{ needs.push-maven.result }}  |" >> $GITHUB_STEP_SUMMARY
+          echo "| npm    | ${{ needs.push-npm.result }}    |" >> $GITHUB_STEP_SUMMARY
+          echo "| PyPI   | ${{ needs.push-pypi.result }}   |" >> $GITHUB_STEP_SUMMARY
+          echo "| NuGet  | ${{ needs.push-nuget.result }}  |" >> $GITHUB_STEP_SUMMARY
+          echo "| Helm   | ${{ needs.push-helm.result }}   |" >> $GITHUB_STEP_SUMMARY
+          echo "Registry: \`${{ env.AK_URL }}\`  Run: \`${{ github.run_number }}\`" >> $GITHUB_STEP_SUMMARY
