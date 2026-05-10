@@ -11,49 +11,37 @@ env:
   AK_REGISTRY: prairie-programs-coastal-mathematical.trycloudflare.com
 
 jobs:
-  # --- Shared token exchange ---
-  exchange-token:
+  # --- Docker ---
+  push-docker:
     runs-on: ubuntu-latest
-    outputs:
-      access_token: ${{ steps.ak_token.outputs.access_token }}
-      ci_username:  ${{ steps.ak_token.outputs.ci_username }}
+    env:
+      AK_REPO: ci-test
     steps:
       - name: Exchange GitHub OIDC token for Artifact Keeper token
-        id: ak_token
         run: |
           GITHUB_JWT=$(curl -sf \
             -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
             "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=artifact-keeper" \
             | jq -r '.value')
-          [ -n "$GITHUB_JWT" ] && [ "$GITHUB_JWT" != "null" ] || { echo "ERROR: No JWT"; exit 1; }
-          echo "JWT obtained (\${#GITHUB_JWT} chars)"
           RESPONSE=$(curl -sf -X POST \
             "$AK_URL/api/v1/auth/ci/token" \
             -H "Authorization: Bearer $GITHUB_JWT" \
             -H "Content-Type: application/json" \
             -d "{\"provider_id\": \"$AK_PROVIDER_ID\"}")
-          echo "$RESPONSE" | jq '{username, token_type, expires_in}'
           ACCESS_TOKEN=$(echo "$RESPONSE" | jq -r '.access_token // empty')
           CI_USERNAME=$(echo "$RESPONSE"  | jq -r '.username // empty')
           [ -n "$ACCESS_TOKEN" ] || { echo "ERROR: No access_token"; exit 1; }
           [ -n "$CI_USERNAME"  ] || { echo "ERROR: No username"; exit 1; }
           echo "::add-mask::$ACCESS_TOKEN"
-          echo "access_token=$ACCESS_TOKEN" >> "$GITHUB_OUTPUT"
-          echo "ci_username=$CI_USERNAME"   >> "$GITHUB_OUTPUT"
+          echo "ACCESS_TOKEN=$ACCESS_TOKEN" >> "$GITHUB_ENV"
+          echo "CI_USERNAME=$CI_USERNAME"   >> "$GITHUB_ENV"
           echo "==> Authenticated as: $CI_USERNAME"
 
-  # --- Docker ---
-  push-docker:
-    runs-on: ubuntu-latest
-    needs: exchange-token
-    env:
-      AK_REPO: ci-test
-    steps:
       - name: Docker login and push
         run: |
-          echo "${{ needs.exchange-token.outputs.access_token }}" | \
+          echo "$ACCESS_TOKEN" | \
             docker login "$AK_REGISTRY" \
-              --username "${{ needs.exchange-token.outputs.ci_username }}" \
+              --username "$CI_USERNAME" \
               --password-stdin
           IMAGE="$AK_REGISTRY/$AK_REPO/hello:${{ github.run_number }}"
           printf 'FROM busybox:latest\nLABEL build.run="%s"\n' "$GITHUB_RUN_NUMBER" > Dockerfile
@@ -64,7 +52,6 @@ jobs:
   # --- Maven ---
   push-maven:
     runs-on: ubuntu-latest
-    needs: exchange-token
     env:
       AK_REPO: ci-test-maven
     steps:
@@ -72,14 +59,35 @@ jobs:
         with:
           java-version: '21'
           distribution: temurin
+
+      - name: Exchange GitHub OIDC token for Artifact Keeper token
+        run: |
+          GITHUB_JWT=$(curl -sf \
+            -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+            "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=artifact-keeper" \
+            | jq -r '.value')
+          RESPONSE=$(curl -sf -X POST \
+            "$AK_URL/api/v1/auth/ci/token" \
+            -H "Authorization: Bearer $GITHUB_JWT" \
+            -H "Content-Type: application/json" \
+            -d "{\"provider_id\": \"$AK_PROVIDER_ID\"}")
+          ACCESS_TOKEN=$(echo "$RESPONSE" | jq -r '.access_token // empty')
+          CI_USERNAME=$(echo "$RESPONSE"  | jq -r '.username // empty')
+          [ -n "$ACCESS_TOKEN" ] || { echo "ERROR: No access_token"; exit 1; }
+          [ -n "$CI_USERNAME"  ] || { echo "ERROR: No username"; exit 1; }
+          echo "::add-mask::$ACCESS_TOKEN"
+          echo "ACCESS_TOKEN=$ACCESS_TOKEN" >> "$GITHUB_ENV"
+          echo "CI_USERNAME=$CI_USERNAME"   >> "$GITHUB_ENV"
+          echo "==> Authenticated as: $CI_USERNAME"
+
       - name: Deploy Maven artifact
         run: |
           mkdir -p ~/.m2
           cat > ~/.m2/settings.xml <<XMLEOF
           <settings><servers><server>
             <id>artifact-keeper</id>
-            <username>${{ needs.exchange-token.outputs.ci_username }}</username>
-            <password>${{ needs.exchange-token.outputs.access_token }}</password>
+            <username>${CI_USERNAME}</username>
+            <password>${ACCESS_TOKEN}</password>
           </server></servers></settings>
           XMLEOF
           mkdir -p demo/src/main/java/demo
@@ -100,20 +108,40 @@ jobs:
   # --- npm ---
   push-npm:
     runs-on: ubuntu-latest
-    needs: exchange-token
     env:
       AK_REPO: ci-test-npm
     steps:
       - uses: actions/setup-node@v4
         with:
           node-version: '20'
+
+      - name: Exchange GitHub OIDC token for Artifact Keeper token
+        run: |
+          GITHUB_JWT=$(curl -sf \
+            -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+            "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=artifact-keeper" \
+            | jq -r '.value')
+          RESPONSE=$(curl -sf -X POST \
+            "$AK_URL/api/v1/auth/ci/token" \
+            -H "Authorization: Bearer $GITHUB_JWT" \
+            -H "Content-Type: application/json" \
+            -d "{\"provider_id\": \"$AK_PROVIDER_ID\"}")
+          ACCESS_TOKEN=$(echo "$RESPONSE" | jq -r '.access_token // empty')
+          CI_USERNAME=$(echo "$RESPONSE"  | jq -r '.username // empty')
+          [ -n "$ACCESS_TOKEN" ] || { echo "ERROR: No access_token"; exit 1; }
+          [ -n "$CI_USERNAME"  ] || { echo "ERROR: No username"; exit 1; }
+          echo "::add-mask::$ACCESS_TOKEN"
+          echo "ACCESS_TOKEN=$ACCESS_TOKEN" >> "$GITHUB_ENV"
+          echo "CI_USERNAME=$CI_USERNAME"   >> "$GITHUB_ENV"
+          echo "==> Authenticated as: $CI_USERNAME"
+
       - name: Publish npm package
         run: |
           REGISTRY_URL="${AK_URL}/npm/${AK_REPO}/"
           mkdir hello-npm && cd hello-npm
           cat > .npmrc <<RCEOF
           @ci:registry=${AK_URL}/npm/${AK_REPO}/
-          //${AK_REGISTRY}/npm/${AK_REPO}/:_authToken=${{ needs.exchange-token.outputs.access_token }}
+          //${AK_REGISTRY}/npm/${AK_REPO}/:_authToken=${ACCESS_TOKEN}
           //${AK_REGISTRY}/npm/${AK_REPO}/:always-auth=true
           RCEOF
           printf '{"name":"@ci/hello-npm","version":"0.0.${{ github.run_number }}","description":"CI OIDC test"}' > package.json
@@ -123,13 +151,33 @@ jobs:
   # --- PyPI ---
   push-pypi:
     runs-on: ubuntu-latest
-    needs: exchange-token
     env:
       AK_REPO: ci-test-pypi
     steps:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
+
+      - name: Exchange GitHub OIDC token for Artifact Keeper token
+        run: |
+          GITHUB_JWT=$(curl -sf \
+            -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+            "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=artifact-keeper" \
+            | jq -r '.value')
+          RESPONSE=$(curl -sf -X POST \
+            "$AK_URL/api/v1/auth/ci/token" \
+            -H "Authorization: Bearer $GITHUB_JWT" \
+            -H "Content-Type: application/json" \
+            -d "{\"provider_id\": \"$AK_PROVIDER_ID\"}")
+          ACCESS_TOKEN=$(echo "$RESPONSE" | jq -r '.access_token // empty')
+          CI_USERNAME=$(echo "$RESPONSE"  | jq -r '.username // empty')
+          [ -n "$ACCESS_TOKEN" ] || { echo "ERROR: No access_token"; exit 1; }
+          [ -n "$CI_USERNAME"  ] || { echo "ERROR: No username"; exit 1; }
+          echo "::add-mask::$ACCESS_TOKEN"
+          echo "ACCESS_TOKEN=$ACCESS_TOKEN" >> "$GITHUB_ENV"
+          echo "CI_USERNAME=$CI_USERNAME"   >> "$GITHUB_ENV"
+          echo "==> Authenticated as: $CI_USERNAME"
+
       - name: Build and upload Python sdist
         run: |
           pip install build twine --quiet
@@ -146,49 +194,95 @@ jobs:
           cd hello_pypi && python -m build --sdist
           twine upload \
             --repository-url "$AK_URL/pypi/$AK_REPO/" \
-            --username "${{ needs.exchange-token.outputs.ci_username }}" \
-            --password "${{ needs.exchange-token.outputs.access_token }}" \
+            --username "$CI_USERNAME" \
+            --password "$ACCESS_TOKEN" \
             --non-interactive dist/*
           echo "==> Published hello-pypi-ci 0.0.${{ github.run_number }}"
 
   # --- NuGet ---
   push-nuget:
     runs-on: ubuntu-latest
-    needs: exchange-token
     env:
       AK_REPO: ci-test-nuget
     steps:
       - uses: actions/setup-dotnet@v4
         with:
           dotnet-version: '8.x'
+
+      - name: Exchange GitHub OIDC token for Artifact Keeper token
+        run: |
+          GITHUB_JWT=$(curl -sf \
+            -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+            "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=artifact-keeper" \
+            | jq -r '.value')
+          RESPONSE=$(curl -sf -X POST \
+            "$AK_URL/api/v1/auth/ci/token" \
+            -H "Authorization: Bearer $GITHUB_JWT" \
+            -H "Content-Type: application/json" \
+            -d "{\"provider_id\": \"$AK_PROVIDER_ID\"}")
+          ACCESS_TOKEN=$(echo "$RESPONSE" | jq -r '.access_token // empty')
+          CI_USERNAME=$(echo "$RESPONSE"  | jq -r '.username // empty')
+          [ -n "$ACCESS_TOKEN" ] || { echo "ERROR: No access_token"; exit 1; }
+          [ -n "$CI_USERNAME"  ] || { echo "ERROR: No username"; exit 1; }
+          echo "::add-mask::$ACCESS_TOKEN"
+          echo "ACCESS_TOKEN=$ACCESS_TOKEN" >> "$GITHUB_ENV"
+          echo "CI_USERNAME=$CI_USERNAME"   >> "$GITHUB_ENV"
+          echo "==> Authenticated as: $CI_USERNAME"
+
       - name: Pack and push NuGet package
         run: |
-          dotnet nuget add source "$AK_URL/nuget/$AK_REPO/v3/index.json" --name artifact-keeper --username "${{ needs.exchange-token.outputs.ci_username }}" --password "${{ needs.exchange-token.outputs.access_token }}" --store-password-in-clear-text
+          dotnet nuget add source "$AK_URL/nuget/$AK_REPO/v3/index.json" \
+            --name artifact-keeper \
+            --username "$CI_USERNAME" \
+            --password "$ACCESS_TOKEN" \
+            --store-password-in-clear-text
           mkdir HelloNuget && cd HelloNuget
           dotnet new classlib -n HelloCi --force
           cd HelloCi
           sed -i "s|<Version>.*</Version>|<Version>0.0.${{ github.run_number }}</Version>|" HelloCi.csproj
           dotnet pack -c Release -o ./nupkgs
           NUPKG=$(ls ./nupkgs/*.nupkg | head -n 1)
-          curl -sfS -X PUT "$AK_URL/nuget/$AK_REPO/api/v2/package" -H "X-NuGet-ApiKey: ${{ needs.exchange-token.outputs.access_token }}" --upload-file "$NUPKG"
+          curl -sfS -X PUT "$AK_URL/nuget/$AK_REPO/api/v2/package" \
+            -H "X-NuGet-ApiKey: $ACCESS_TOKEN" \
+            --upload-file "$NUPKG"
           echo "==> Pushed HelloCi 0.0.${{ github.run_number }}"
 
   # --- Helm ---
   push-helm:
     runs-on: ubuntu-latest
-    needs: exchange-token
     env:
       AK_REPO: ci-test-helm
     steps:
       - uses: azure/setup-helm@v4
+
+      - name: Exchange GitHub OIDC token for Artifact Keeper token
+        run: |
+          GITHUB_JWT=$(curl -sf \
+            -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+            "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=artifact-keeper" \
+            | jq -r '.value')
+          RESPONSE=$(curl -sf -X POST \
+            "$AK_URL/api/v1/auth/ci/token" \
+            -H "Authorization: Bearer $GITHUB_JWT" \
+            -H "Content-Type: application/json" \
+            -d "{\"provider_id\": \"$AK_PROVIDER_ID\"}")
+          ACCESS_TOKEN=$(echo "$RESPONSE" | jq -r '.access_token // empty')
+          CI_USERNAME=$(echo "$RESPONSE"  | jq -r '.username // empty')
+          [ -n "$ACCESS_TOKEN" ] || { echo "ERROR: No access_token"; exit 1; }
+          [ -n "$CI_USERNAME"  ] || { echo "ERROR: No username"; exit 1; }
+          echo "::add-mask::$ACCESS_TOKEN"
+          echo "ACCESS_TOKEN=$ACCESS_TOKEN" >> "$GITHUB_ENV"
+          echo "CI_USERNAME=$CI_USERNAME"   >> "$GITHUB_ENV"
+          echo "==> Authenticated as: $CI_USERNAME"
+
       - name: Package and push Helm chart
         run: |
           helm create hello-chart
           sed -i "s/^version:.*/version: 0.0.${{ github.run_number }}/" hello-chart/Chart.yaml
           helm package hello-chart
           helm registry login "$AK_REGISTRY" \
-            --username "${{ needs.exchange-token.outputs.ci_username }}" \
-            --password "${{ needs.exchange-token.outputs.access_token }}"
+            --username "$CI_USERNAME" \
+            --password "$ACCESS_TOKEN"
           helm push hello-chart-0.0.${{ github.run_number }}.tgz \
             oci://"$AK_REGISTRY"/"$AK_REPO"
           echo "==> Pushed hello-chart 0.0.${{ github.run_number }}"
