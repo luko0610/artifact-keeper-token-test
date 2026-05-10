@@ -5,11 +5,18 @@ permissions:
   id-token: write   # required to request the GitHub OIDC JWT
   contents: read
 
+env:
+  AK_URL: https://stevens-glance-unit-land.trycloudflare.com
+  AK_PROVIDER_ID: e698157e-485d-4478-9857-8de8e5efa9de
+  AK_REGISTRY: stevens-glance-unit-land.trycloudflare.com
+  AK_REPO: ci-test
+
 jobs:
   test:
     runs-on: ubuntu-latest
     steps:
       - name: Exchange GitHub OIDC token for Artifact Keeper token
+        id: ak_token
         run: |
           echo "==> Requesting GitHub OIDC JWT (audience: artifact-keeper)..."
           GITHUB_JWT=$(curl -sf \
@@ -26,9 +33,9 @@ jobs:
           echo ""
           echo "==> Exchanging JWT for Artifact Keeper access token..."
           RESPONSE=$(curl -sf -X POST \
-            https://stevens-glance-unit-land.trycloudflare.com/api/v1/auth/ci/token \
+            "$AK_URL/api/v1/auth/ci/token" \
             -H "Content-Type: application/json" \
-            -d "{\"provider_id\": \"e698157e-485d-4478-9857-8de8e5efa9de\", \"jwt\": \"$GITHUB_JWT\"}")
+            -d "{\"provider_id\": \"$AK_PROVIDER_ID\", \"jwt\": \"$GITHUB_JWT\"}")
 
           echo ""
           echo "==> Response:"
@@ -40,10 +47,46 @@ jobs:
             exit 1
           fi
 
+          echo "::add-mask::$ACCESS_TOKEN"
+          echo "access_token=$ACCESS_TOKEN" >> "$GITHUB_OUTPUT"
+
           echo ""
-          echo "==> SUCCESS! Token starts with: ${ACCESS_TOKEN:0:20}..."
-          echo "==> Verifying token against /api/v1/auth/me ..."
-          curl -sf \
-            https://stevens-glance-unit-land.trycloudflare.com/api/v1/auth/me \
-            -H "Authorization: Bearer $ACCESS_TOKEN" \
-            | jq '{username, display_name, groups}'
+          echo "==> SUCCESS! Verifying token against /api/v1/auth/me ..."
+          ME=$(curl -sf \
+            "$AK_URL/api/v1/auth/me" \
+            -H "Authorization: Bearer $ACCESS_TOKEN")
+          echo "$ME" | jq '{username, display_name, groups}'
+
+          CI_USERNAME=$(echo "$ME" | jq -r '.username')
+          echo "ci_username=$CI_USERNAME" >> "$GITHUB_OUTPUT"
+
+      - name: Docker login to Artifact Keeper registry
+        run: |
+          echo "${{ steps.ak_token.outputs.access_token }}" | \
+            docker login "$AK_REGISTRY" \
+              --username "${{ steps.ak_token.outputs.ci_username }}" \
+              --password-stdin
+
+      - name: Build and push minimal image
+        run: |
+          IMAGE="$AK_REGISTRY/$AK_REPO/hello:${{ github.run_number }}"
+          IMAGE_LATEST="$AK_REGISTRY/$AK_REPO/hello:latest"
+
+          echo "==> Building minimal image..."
+          printf 'FROM scratch\nCOPY /etc/hostname /hostname\n' > Dockerfile
+          # Use busybox as a real pullable base image instead of scratch+COPY trick
+          printf 'FROM busybox:latest\nLABEL org.opencontainers.image.source="https://github.com/%s"\nLABEL build.run="%s"\n' \
+            "$GITHUB_REPOSITORY" "$GITHUB_RUN_NUMBER" > Dockerfile
+
+          docker build -t "$IMAGE" -t "$IMAGE_LATEST" .
+
+          echo ""
+          echo "==> Pushing $IMAGE ..."
+          docker push "$IMAGE"
+
+          echo ""
+          echo "==> Pushing $IMAGE_LATEST ..."
+          docker push "$IMAGE_LATEST"
+
+          echo ""
+          echo "==> SUCCESS! Pushed to $AK_REGISTRY/$AK_REPO/hello"
